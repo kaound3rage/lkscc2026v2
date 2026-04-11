@@ -1,0 +1,177 @@
+name: CI/CD Pipeline
+on:
+  push:
+    branches:
+      - main
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_OWNER: ${{ github.repository_owner }}
+  REPO_NAME: ${{ github.event.repository.name }}
+
+jobs:
+  # ─────────────────────────────────────────────────────────────────────────────
+  # Job 1 — Build & push lm-frontend Docker image to GHCR
+  # ─────────────────────────────────────────────────────────────────────────────
+  build-frontend:
+    name: Build Frontend Image
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Generate timestamp tag
+        id: timestamp
+        run: echo "TAG=$(date -u +'%Y-%m-%d-%H-%M-%S')" >> $GITHUB_OUTPUT
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push lm-frontend image
+        uses: docker/build-push-action@v5
+        with:
+          context: ./lm-frontend
+          file: ./lm-frontend/Dockerfile
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/${{ env.IMAGE_OWNER }}/${{ env.REPO_NAME }}:frontend-${{ steps.timestamp.outputs.TAG }}
+            ${{ env.REGISTRY }}/${{ env.IMAGE_OWNER }}/${{ env.REPO_NAME }}:frontend-latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Summary
+        run: |
+          echo "### ✅ Frontend Image Published" >> $GITHUB_STEP_SUMMARY
+          echo "**Image:** \`${{ env.REGISTRY }}/${{ env.IMAGE_OWNER }}/${{ env.REPO_NAME }}:frontend-${{ steps.timestamp.outputs.TAG }}\`" >> $GITHUB_STEP_SUMMARY
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # Job 2 — Build & push llm-integrate-sns Docker image to GHCR
+  # ─────────────────────────────────────────────────────────────────────────────
+  build-llm-integrate-sns:
+    name: Build LLM Integrate SNS Image
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Generate timestamp tag
+        id: timestamp
+        run: echo "TAG=$(date -u +'%Y-%m-%d-%H-%M-%S')" >> $GITHUB_OUTPUT
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push llm-integrate-sns image
+        uses: docker/build-push-action@v5
+        with:
+          context: ./llm-integrate-sns
+          file: ./llm-integrate-sns/Dockerfile
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/${{ env.IMAGE_OWNER }}/${{ env.REPO_NAME }}:llm-webhook-${{ steps.timestamp.outputs.TAG }}
+            ${{ env.REGISTRY }}/${{ env.IMAGE_OWNER }}/${{ env.REPO_NAME }}:llm-webhook-latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Summary
+        run: |
+          echo "### ✅ LLM Integrate SNS Image Published" >> $GITHUB_STEP_SUMMARY
+          echo "**Image:** \`${{ env.REGISTRY }}/${{ env.IMAGE_OWNER }}/${{ env.REPO_NAME }}:llm-webhook-${{ steps.timestamp.outputs.TAG }}\`" >> $GITHUB_STEP_SUMMARY
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # Job 3 — Generate dataset, zip, upload to GitHub Release (tag: dataset)
+  # ─────────────────────────────────────────────────────────────────────────────
+  build-example-dataset-csv:
+    name: Build Example Dataset CSV
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          if [ -f dataset/requirements.txt ]; then
+            pip install -r dataset/requirements.txt
+          else
+            pip install pandas numpy faker
+          fi
+
+      - name: Run dataset generator
+        run: |
+          cd dataset
+          python dataset.py
+
+      - name: Build raw-data/ directory structure
+        run: |
+          mkdir -p raw-data
+          # Move all generated CSVs into raw-data/
+          find dataset -name "*.csv" -exec cp {} raw-data/ \;
+          echo "── Contents of raw-data/ ──"
+          ls -lh raw-data/
+
+      - name: Zip raw-data directory
+        run: |
+          zip -r raw-data.zip raw-data/
+          echo "── Zip size: $(du -sh raw-data.zip | cut -f1) ──"
+
+      - name: Delete existing 'dataset' release (if any)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release delete dataset --yes 2>/dev/null || true
+          git push --delete origin dataset 2>/dev/null || true
+
+      - name: Create GitHub Release and upload assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Collect all CSV files + zip for upload
+          CSV_FILES=$(find raw-data -name "*.csv" | tr '\n' ' ')
+
+          gh release create dataset \
+            --title "Example Dataset" \
+            --notes "Auto-generated dataset from \`dataset/dataset.py\` on $(date -u +'%Y-%m-%d %H:%M:%S UTC')" \
+            --latest=false \
+            raw-data.zip \
+            $CSV_FILES
+
+      - name: Summary
+        run: |
+          echo "### ✅ Dataset Released" >> $GITHUB_STEP_SUMMARY
+          echo "**Tag:** \`dataset\`" >> $GITHUB_STEP_SUMMARY
+          echo "**Files uploaded:**" >> $GITHUB_STEP_SUMMARY
+          find raw-data -name "*.csv" | while read f; do
+            echo "- \`$(basename $f)\` ($(du -sh $f | cut -f1))" >> $GITHUB_STEP_SUMMARY
+          done
+          echo "- \`raw-data.zip\` ($(du -sh raw-data.zip | cut -f1))" >> $GITHUB_STEP_SUMMARY

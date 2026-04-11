@@ -1,0 +1,360 @@
+<!-- templates/prediction.html -->
+<!DOCTYPE html>
+<html lang="en" data-theme="corporate">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Enhanced Prediction Service</title>
+    <link href="https://cdn.jsdelivr.net/npm/daisyui@3.9.4/dist/full.css" rel="stylesheet">
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+</head>
+<body class="bg-gray-50 min-h-screen">
+    <div class="container mx-auto px-4 py-8">
+        <!-- Header -->
+        <header class="text-center mb-12">
+            <h1 class="text-4xl font-bold text-primary mb-2">Smart Stream Prediction</h1>
+            <p class="text-lg text-gray-600">ML-powered content stream probability prediction</p>
+        </header>
+
+        <!-- Main Content -->
+        <div class="grid grid-cols-1 lg:grid-cols-3 gap-8">
+            <!-- Input Panel -->
+            <div class="lg:col-span-1">
+                <div class="card bg-base-100 shadow-lg sticky top-4">
+                    <div class="card-body">
+                        <h2 class="card-title">Prediction Parameters</h2>
+                        <form id="prediction-form" class="space-y-4">
+                            <!-- User Section -->
+                            <div class="collapse collapse-plus bg-base-200">
+                                <input type="checkbox" checked>
+                                <div class="collapse-title font-medium">User Information</div>
+                                <div class="collapse-content">
+                                    <div class="form-control">
+                                        <label class="label">
+                                            <span class="label-text">User ID</span>
+                                        </label>
+                                        <input type="text" id="user-id" class="input input-bordered" placeholder="user_00001" required>
+                                    </div>
+                                    <div class="form-control">
+                                        <label class="label">
+                                            <span class="label-text">User Context</span>
+                                        </label>
+                                        <select id="user-context" class="select select-bordered">
+                                            <option value="browsing">Just Browsing</option>
+                                            <option value="researching">Product Research</option>
+                                            <option value="ready">Ready to Buy</option>
+                                        </select>
+                                    </div>
+                                </div>
+                            </div>
+                            
+                            <!-- Product Section -->
+                            <div class="collapse collapse-plus bg-base-200">
+                                <input type="checkbox" checked>
+                                <div class="collapse-title font-medium">Product Information</div>
+                                <div class="collapse-content">
+                                    <div class="form-control">
+                                        <label class="label">
+                                            <span class="label-text">Content ID</span>
+                                        </label>
+                                        <input type="text" id="content-id" class="input input-bordered" placeholder="content_00001" required>
+                                    </div>
+                                </div>
+                            </div>
+                            
+                            <div class="form-control pt-4">
+                                <button type="submit" class="btn btn-primary w-full">
+                                    <span id="predict-btn-text">Predict Stream Probability</span>
+                                    <span id="predict-spinner" class="loading loading-spinner loading-sm hidden"></span>
+                                </button>
+                            </div>
+                        </form>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- Results Panel -->
+            <div class="lg:col-span-2 space-y-6">
+                <!-- Prediction Card -->
+                <div class="card bg-base-100 shadow-lg">
+                    <div class="card-body">
+                        <h2 class="card-title">Prediction Results</h2>
+                        <div class="flex flex-col items-center py-6">
+                            <div class="radial-progress text-primary text-4xl font-bold" 
+                                 id="prediction-circle" 
+                                 style="--value:0; --size:16rem; --thickness:1.5rem;">
+                                <span id="prediction-value">0</span>%
+                            </div>
+                            <div id="prediction-message" class="mt-4 text-lg text-center"></div>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- Insights Card -->
+                <div class="card bg-base-100 shadow-lg">
+                    <div class="card-body">
+                        <h2 class="card-title">Prediction Insights</h2>
+                        <div id="insights-container" class="space-y-4">
+                            <div class="alert alert-info">
+                                <span>Submit a prediction to see detailed insights</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- History Chart -->
+                <div class="card bg-base-100 shadow-lg">
+                    <div class="card-body">
+                        <h2 class="card-title">Prediction History</h2>
+                        <canvas id="history-chart" class="w-full h-64"></canvas>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Enhanced Prediction Logic
+        document.addEventListener('DOMContentLoaded', function() {
+            const predictionHistory = [];
+            let historyChart = null;
+            
+            // Initialize form
+            const form = document.getElementById('prediction-form');
+            form.addEventListener('submit', handlePrediction);
+            
+            // Initialize chart
+            initHistoryChart();
+            
+            async function handlePrediction(e) {
+                e.preventDefault();
+                
+                const btnText = document.getElementById('predict-btn-text');
+                const spinner = document.getElementById('predict-spinner');
+                
+                // Get form values
+                const userId = document.getElementById('user-id').value.trim();
+                const contentId = document.getElementById('content-id').value.trim();
+                const userContext = document.getElementById('user-context').value;
+                
+                if (!userId || !contentId) {
+                    showAlert('Please fill in all required fields', 'error');
+                    return;
+                }
+                
+                // UI state
+                btnText.textContent = 'Predicting...';
+                spinner.classList.remove('hidden');
+                clearAlerts();
+                
+                try {
+                    const response = await fetch('/api/predict', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json'
+                        },
+                        body: JSON.stringify({
+                            user_id: userId,
+                            content_id: contentId,
+                            context: {
+                                user_state: userContext
+                            }
+                        })
+                    });
+                    
+                    if (!response.ok) {
+                        const error = await response.json().catch(() => ({}));
+                        throw new Error(error.message || 'Prediction failed');
+                    }
+                    
+                    const data = await response.json();
+                    
+                    // Update UI
+                    updatePredictionUI(data);
+                    updateHistory(data);
+                    
+                } catch (error) {
+                    console.error('Prediction error:', error);
+                    showAlert(`Error: ${error.message}`, 'error');
+                } finally {
+                    btnText.textContent = 'Predict Stream Probability';
+                    spinner.classList.add('hidden');
+                }
+            }
+            
+            function updatePredictionUI(data) {
+                // Update prediction circle
+                const score = Math.round(data.prediction_percentage);
+                document.getElementById('prediction-value').textContent = score;
+                animatePrediction(score);
+                
+                // Update prediction message
+                const messageEl = document.getElementById('prediction-message');
+                let message = '';
+                let messageClass = '';
+                
+                if (score >= 80) {
+                    message = 'Very high stream probability!';
+                    messageClass = 'text-success';
+                } else if (score >= 60) {
+                    message = 'High stream probability';
+                    messageClass = 'text-success';
+                } else if (score >= 40) {
+                    message = 'Moderate stream probability';
+                    messageClass = 'text-warning';
+                } else {
+                    message = 'Low stream probability';
+                    messageClass = 'text-error';
+                }
+                
+                messageEl.textContent = message;
+                messageEl.className = `mt-4 text-lg text-center font-semibold ${messageClass}`;
+                
+                // Update insights
+                updateInsights(data);
+            }
+            
+            function animatePrediction(target) {
+                const element = document.getElementById('prediction-circle');
+                let progress = 0;
+                const interval = setInterval(() => {
+                    progress += 2;
+                    element.style.setProperty('--value', Math.min(progress, target));
+                    if (progress >= target) clearInterval(interval);
+                }, 20);
+            }
+            
+            function updateInsights(data) {
+                const container = document.getElementById('insights-container');
+                let html = '';
+                
+                // Confidence level
+                html += `
+                    <div class="alert ${data.confidence === 'high' ? 'alert-success' : 
+                                      data.confidence === 'medium' ? 'alert-warning' : 'alert-error'}">
+                        <span>Confidence: <strong>${data.confidence || 'medium'}</strong></span>
+                    </div>
+                `;
+                
+                // Key factors
+                if (data.factors && data.factors.length) {
+                    html += `
+                        <div class="bg-base-200 p-4 rounded-lg">
+                            <h3 class="font-bold mb-2">Key Factors</h3>
+                            <ul class="list-disc pl-5 space-y-1">
+                                ${data.factors.map(factor => `<li>${formatFactor(factor)}</li>`).join('')}
+                            </ul>
+                        </div>
+                    `;
+                }
+                
+                // Recommendation
+                if (data.recommendation) {
+                    html += `
+                        <div class="alert alert-info">
+                            <span>Recommendation: <strong>${data.recommendation}</strong></span>
+                        </div>
+                    `;
+                }
+                
+                container.innerHTML = html;
+            }
+            
+            function formatFactor(factor) {
+                const factorMap = {
+                    'frequent_buyer': 'Frequent streamr',
+                    'positive_reviewer': 'Positive review history',
+                    'popular_product': 'Popular product',
+                    'affordable_price': 'Competitive pricing',
+                    'premium_segment': 'Premium customer'
+                };
+                
+                return factorMap[factor] || factor;
+            }
+            
+            function initHistoryChart() {
+                const ctx = document.getElementById('history-chart').getContext('2d');
+                historyChart = new Chart(ctx, {
+                    type: 'line',
+                    data: {
+                        labels: [],
+                        datasets: [{
+                            label: 'Stream Probability',
+                            data: [],
+                            borderColor: '#3b82f6',
+                            backgroundColor: 'rgba(59, 130, 246, 0.1)',
+                            tension: 0.3,
+                            fill: true
+                        }]
+                    },
+                    options: {
+                        responsive: true,
+                        scales: {
+                            y: {
+                                beginAtZero: true,
+                                max: 100,
+                                ticks: {
+                                    callback: function(value) {
+                                        return value + '%';
+                                    }
+                                }
+                            }
+                        }
+                    }
+                });
+            }
+            
+            function updateHistory(data) {
+                // Add to history
+                const timestamp = new Date().toLocaleTimeString();
+                predictionHistory.push({
+                    time: timestamp,
+                    score: data.prediction_percentage
+                });
+                
+                // Keep only last 10 entries
+                if (predictionHistory.length > 10) {
+                    predictionHistory.shift();
+                }
+                
+                // Update chart
+                historyChart.data.labels = predictionHistory.map(item => item.time);
+                historyChart.data.datasets[0].data = predictionHistory.map(item => item.score);
+                historyChart.update();
+            }
+            
+            function showAlert(message, type) {
+                clearAlerts();
+                
+                const typeClasses = {
+                    'error': 'alert-error',
+                    'success': 'alert-success',
+                    'info': 'alert-info'
+                };
+                
+                const alert = document.createElement('div');
+                alert.className = `alert ${typeClasses[type] || 'alert-info'} mt-4`;
+                alert.innerHTML = `
+                    <svg xmlns="http://www.w3.org/2000/svg" class="stroke-current shrink-0 h-6 w-6" fill="none" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" 
+                              d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+                    </svg>
+                    <span>${message}</span>
+                `;
+                
+                document.getElementById('insights-container').prepend(alert);
+            }
+            
+            function clearAlerts() {
+                const alerts = document.querySelectorAll('.alert');
+                alerts.forEach(alert => {
+                    if (alert.closest('#insights-container')) {
+                        alert.remove();
+                    }
+                });
+            }
+        });
+    </script>
+</body>
+</html>

@@ -1,0 +1,521 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="corporate">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Content Demand Forecasting</title>
+    <link href="https://cdn.jsdelivr.net/npm/daisyui@3.9.4/dist/full.css" rel="stylesheet">
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/luxon@3.0.1"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-luxon@1.2.0"></script>
+</head>
+<body class="bg-gray-50 min-h-screen">
+    <div class="container mx-auto px-4 py-8">
+        <!-- Header -->
+        <header class="text-center mb-12">
+            <h1 class="text-4xl font-bold text-primary mb-2">Content Demand Forecast</h1>
+            <p class="text-lg text-gray-600">ML-powered stream forecasting for content planning</p>
+        </header>
+
+        <!-- Main Content -->
+        <div class="grid grid-cols-1 lg:grid-cols-3 gap-8">
+            <!-- Input Panel -->
+            <div class="lg:col-span-1">
+                <div class="card bg-base-100 shadow-lg sticky top-4">
+                    <div class="card-body">
+                        <h2 class="card-title">Forecast Parameters</h2>
+                        <form id="forecast-form" class="space-y-4">
+                            <div class="form-control">
+                                <label class="label">
+                                    <span class="label-text">Content ID</span>
+                                </label>
+                                <input type="text" id="content-id" class="input input-bordered" placeholder="content_00001" required>
+                            </div>
+                            
+                            <div class="form-control">
+                                <label class="label">
+                                    <span class="label-text">Forecast Period (days)</span>
+                                </label>
+                                <select id="forecast-days" class="select select-bordered">
+                                    <option value="7">1 Week</option>
+                                    <option value="14">2 Weeks</option>
+                                    <option value="30" selected>1 Month</option>
+                                    <option value="90">3 Months</option>
+                                </select>
+                            </div>
+                            
+                            <div class="form-control pt-4">
+                                <button type="submit" class="btn btn-primary w-full">
+                                    <span id="forecast-btn-text">Generate Forecast</span>
+                                    <span id="forecast-spinner" class="loading loading-spinner loading-sm hidden"></span>
+                                </button>
+                            </div>
+                        </form>
+                    </div>
+                </div>
+                
+                <!-- Summary Stats -->
+                <div class="card bg-base-100 shadow-lg mt-6">
+                    <div class="card-body">
+                        <h2 class="card-title">Historical Summary</h2>
+                        <div id="summary-stats" class="space-y-3">
+                            <div class="alert alert-info">
+                                <span>Submit a Content ID to view historical stream data</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Debug Panel (visible on error) -->
+                <div id="debug-panel" class="card bg-base-100 shadow-lg mt-6 hidden">
+                    <div class="card-body">
+                        <h2 class="card-title text-warning">⚠ API Response Debug</h2>
+                        <p class="text-xs text-gray-500 mb-2">Raw response dari API (untuk troubleshooting):</p>
+                        <pre id="debug-content" class="text-xs bg-gray-100 p-3 rounded overflow-auto max-h-64"></pre>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- Results Panel -->
+            <div class="lg:col-span-2 space-y-6">
+                <!-- Forecast Chart -->
+                <div class="card bg-base-100 shadow-lg">
+                    <div class="card-body">
+                        <h2 class="card-title">Demand Forecast</h2>
+                        <div class="tabs">
+                            <button id="chart-tab" class="tab tab-bordered tab-active">Chart View</button> 
+                            <button id="table-tab" class="tab tab-bordered">Table View</button>
+                        </div>
+                        
+                        <div id="chart-container" class="mt-4">
+                            <canvas id="forecast-chart" class="w-full h-96"></canvas>
+                        </div>
+                        
+                        <div id="table-container" class="mt-4 hidden">
+                            <div class="overflow-x-auto">
+                                <table class="table table-zebra">
+                                    <thead>
+                                        <tr>
+                                            <th>Date</th>
+                                            <th>Forecast</th>
+                                            <th>Confidence Range</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="forecast-table-body"></tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- Recommendations -->
+                <div class="card bg-base-100 shadow-lg">
+                    <div class="card-body">
+                        <h2 class="card-title">Content Scheduling Recommendations</h2>
+                        <div id="recommendations" class="space-y-2">
+                            <div class="alert alert-info">
+                                <span>Forecast results will generate content scheduling recommendations</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        document.addEventListener('DOMContentLoaded', function () {
+            let forecastChart = null;
+
+            // Tab switching
+            document.getElementById('chart-tab').addEventListener('click', () => {
+                document.getElementById('chart-container').classList.remove('hidden');
+                document.getElementById('table-container').classList.add('hidden');
+                document.getElementById('chart-tab').classList.add('tab-active');
+                document.getElementById('table-tab').classList.remove('tab-active');
+            });
+
+            document.getElementById('table-tab').addEventListener('click', () => {
+                document.getElementById('chart-container').classList.add('hidden');
+                document.getElementById('table-container').classList.remove('hidden');
+                document.getElementById('chart-tab').classList.remove('tab-active');
+                document.getElementById('table-tab').classList.add('tab-active');
+            });
+
+            document.getElementById('forecast-form').addEventListener('submit', handleForecast);
+
+            async function handleForecast(e) {
+                e.preventDefault();
+
+                const btnText  = document.getElementById('forecast-btn-text');
+                const spinner  = document.getElementById('forecast-spinner');
+                const contentId    = document.getElementById('content-id').value.trim();
+                const forecastDays = document.getElementById('forecast-days').value;
+
+                if (!contentId) {
+                    showAlert('Please enter a Content ID', 'error');
+                    return;
+                }
+
+                btnText.textContent = 'Forecasting...';
+                spinner.classList.remove('hidden');
+                clearAlerts();
+                hideDebug();
+
+                try {
+                    const response = await fetch('/api/forecast', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            content_id: contentId,
+                            forecast_days: parseInt(forecastDays)
+                        })
+                    });
+
+                    // Read text first so we can log raw response on parse error
+                    const rawText = await response.text();
+                    console.log('[DEBUG] Raw API response:', rawText);
+
+                    let data;
+                    try {
+                        data = JSON.parse(rawText);
+                    } catch (parseErr) {
+                        showDebug(rawText);
+                        throw new Error('API returned non-JSON response. Check debug panel below.');
+                    }
+
+                    console.log('[DEBUG] Parsed response:', data);
+
+                    if (!response.ok) {
+                        showDebug(JSON.stringify(data, null, 2));
+                        throw new Error(data.error || `HTTP ${response.status}`);
+                    }
+
+                    // ── Normalise response structure ──────────────────────────────
+                    // Support both flat  { dates, values, ... }
+                    // and nested         { forecast: { dates, values, ... }, historical_summary: {...} }
+                    const forecast = normaliseForecast(data);
+
+                    if (!forecast) {
+                        showDebug(JSON.stringify(data, null, 2));
+                        throw new Error('Unexpected API response structure. Check debug panel below.');
+                    }
+
+                    updateForecastUI(forecast, data);
+
+                } catch (err) {
+                    console.error('Forecast error:', err);
+                    showAlert(`Error: ${err.message}`, 'error');
+                } finally {
+                    btnText.textContent = 'Generate Forecast';
+                    spinner.classList.add('hidden');
+                }
+            }
+
+            /**
+             * Normalise API response into a consistent shape.
+             *
+             * Actual API returns:
+             * {
+             *   forecast: number[],          ← array of float values
+             *   forecast_dates: string[],    ← may be empty []  ← generate if empty
+             *   summary: { total_forecast, average_daily, min_daily, max_daily, std_deviation },
+             *   method: string,
+             *   confidence: string,
+             *   status: string
+             * }
+             */
+            function normaliseForecast(data) {
+                // Case A: Lambda/actual API — forecast is a flat array of numbers
+                if (Array.isArray(data.forecast)) {
+                    const values = data.forecast.map(v => Math.round(v));
+                    const n      = values.length;
+
+                    // forecast_dates may be empty — generate from today if so
+                    let dates = Array.isArray(data.forecast_dates) && data.forecast_dates.length > 0
+                        ? data.forecast_dates
+                        : generateDates(n);
+
+                    // Build confidence intervals from std_deviation if available
+                    const std = data.summary?.std_deviation || 0;
+                    const lower = values.map(v => Math.max(0, Math.round(v - std)));
+                    const upper = values.map(v => Math.round(v + std));
+
+                    return {
+                        dates,
+                        values,
+                        confidence_intervals: { lower, upper },
+                        historical_summary: {
+                            last_30_days:  data.historical_data_points || 0,
+                            last_90_days:  0,
+                            last_365_days: 0
+                        },
+                        summary: data.summary || {},
+                        method:  data.method  || '',
+                        confidence: data.confidence || ''
+                    };
+                }
+
+                // Case B: Python Flask nested structure
+                if (data.forecast && Array.isArray(data.forecast.dates)) {
+                    return {
+                        dates:    data.forecast.dates,
+                        values:   data.forecast.values || [],
+                        confidence_intervals: data.forecast.confidence_intervals || { lower: [], upper: [] },
+                        historical_summary:   data.historical_summary || {}
+                    };
+                }
+
+                // Case C: flat dates/values at root
+                if (Array.isArray(data.dates)) {
+                    return {
+                        dates:  data.dates,
+                        values: data.values || [],
+                        confidence_intervals: data.confidence_intervals || { lower: [], upper: [] },
+                        historical_summary:   data.historical_summary  || {}
+                    };
+                }
+
+                // Case D: API Gateway proxy wraps body as string
+                if (data.body) {
+                    try {
+                        const inner = typeof data.body === 'string' ? JSON.parse(data.body) : data.body;
+                        return normaliseForecast(inner);
+                    } catch (_) {}
+                }
+
+                return null;
+            }
+
+            /** Generate n date strings starting from tomorrow */
+            function generateDates(n) {
+                const dates = [];
+                const start = new Date();
+                start.setDate(start.getDate() + 1);
+                for (let i = 0; i < n; i++) {
+                    const d = new Date(start);
+                    d.setDate(start.getDate() + i);
+                    dates.push(d.toISOString().slice(0, 10));
+                }
+                return dates;
+            }
+
+            function updateForecastUI(forecast, rawData) {
+                updateSummaryStats(forecast.historical_summary);
+                updateForecastChart(forecast);
+                updateForecastTable(forecast);
+                generateRecommendations(forecast);
+            }
+
+            function updateSummaryStats(stats) {
+                const s = stats || {};
+                document.getElementById('summary-stats').innerHTML = `
+                    <div class="stats shadow w-full">
+                        <div class="stat">
+                            <div class="stat-title">Last 30 Days</div>
+                            <div class="stat-value">${(s.last_30_days  ?? 0).toLocaleString()}</div>
+                            <div class="stat-desc">Streams</div>
+                        </div>
+                        <div class="stat">
+                            <div class="stat-title">Last 90 Days</div>
+                            <div class="stat-value">${(s.last_90_days  ?? 0).toLocaleString()}</div>
+                            <div class="stat-desc">Streams</div>
+                        </div>
+                        <div class="stat">
+                            <div class="stat-title">Last 365 Days</div>
+                            <div class="stat-value">${(s.last_365_days ?? 0).toLocaleString()}</div>
+                            <div class="stat-desc">Streams</div>
+                        </div>
+                    </div>
+                `;
+            }
+
+            function updateForecastChart(forecast) {
+                const ctx = document.getElementById('forecast-chart').getContext('2d');
+
+                if (forecastChart) forecastChart.destroy();
+
+                const dates  = (forecast.dates  || []).map(d => new Date(d));
+                const values = forecast.values  || [];
+                const lower  = (forecast.confidence_intervals || {}).lower || [];
+                const upper  = (forecast.confidence_intervals || {}).upper || [];
+
+                if (dates.length === 0) {
+                    console.warn('[WARN] No dates in forecast response');
+                    return;
+                }
+
+                forecastChart = new Chart(ctx, {
+                    type: 'line',
+                    data: {
+                        labels: dates,
+                        datasets: [
+                            {
+                                label: 'Forecast',
+                                data: values,
+                                borderColor: '#3b82f6',
+                                backgroundColor: 'rgba(59,130,246,0.1)',
+                                borderWidth: 2,
+                                tension: 0.1,
+                                fill: false
+                            },
+                            {
+                                label: 'Confidence Upper',
+                                data: upper,
+                                borderColor: '#10b981',
+                                backgroundColor: 'rgba(16,185,129,0.1)',
+                                borderWidth: 1,
+                                borderDash: [5, 5],
+                                fill: 1
+                            },
+                            {
+                                label: 'Confidence Lower',
+                                data: lower,
+                                borderColor: '#ef4444',
+                                backgroundColor: 'rgba(239,68,68,0.1)',
+                                borderWidth: 1,
+                                borderDash: [5, 5],
+                                fill: 1
+                            }
+                        ]
+                    },
+                    options: {
+                        responsive: true,
+                        scales: {
+                            x: {
+                                type: 'time',
+                                time: { unit: 'day', tooltipFormat: 'MMM d' },
+                                title: { display: true, text: 'Date' }
+                            },
+                            y: {
+                                title: { display: true, text: 'Streams' },
+                                beginAtZero: true
+                            }
+                        },
+                        plugins: {
+                            tooltip: {
+                                callbacks: {
+                                    label: ctx => `${ctx.dataset.label}: ${ctx.parsed.y} streams`
+                                }
+                            }
+                        }
+                    }
+                });
+            }
+
+            function updateForecastTable(forecast) {
+                const dates  = forecast.dates  || [];
+                const values = forecast.values || [];
+                const lower  = (forecast.confidence_intervals || {}).lower || [];
+                const upper  = (forecast.confidence_intervals || {}).upper || [];
+
+                let html = '';
+                for (let i = 0; i < dates.length; i++) {
+                    html += `
+                        <tr>
+                            <td>${dates[i]}</td>
+                            <td>${values[i] ?? '-'}</td>
+                            <td>${lower[i] ?? '-'} – ${upper[i] ?? '-'}</td>
+                        </tr>
+                    `;
+                }
+                document.getElementById('forecast-table-body').innerHTML = html || '<tr><td colspan="3" class="text-center text-gray-400">No data</td></tr>';
+            }
+
+            function generateRecommendations(forecast) {
+                const values  = forecast.values  || [];
+                const dates   = forecast.dates   || [];
+                const summary = forecast.summary || {};
+
+                if (values.length === 0) {
+                    document.getElementById('recommendations').innerHTML = `
+                        <div class="alert alert-warning"><span>No forecast values to generate recommendations.</span></div>
+                    `;
+                    return;
+                }
+
+                const total    = summary.total_forecast   ? Math.round(summary.total_forecast)   : values.reduce((a, b) => a + b, 0);
+                const avgDaily = summary.average_daily    ? summary.average_daily                 : total / values.length;
+                const maxDaily = summary.max_daily        ? Math.round(summary.max_daily)         : Math.max(...values);
+                const minDaily = summary.min_daily        ? Math.round(summary.min_daily)         : Math.min(...values);
+                const stdDev   = summary.std_deviation    ? Math.round(summary.std_deviation)     : 0;
+                const peakIdx  = values.indexOf(maxDaily);
+                const peakDate = dates[peakIdx] || '-';
+                const method   = forecast.method     || '';
+                const conf     = forecast.confidence  || '';
+
+                let recommendation, alertClass;
+                if (avgDaily < 50) {
+                    recommendation = 'Maintain minimal scheduling (1–2 weeks buffer)';
+                    alertClass = 'alert-info';
+                } else if (avgDaily < 150) {
+                    recommendation = 'Keep 2–3 weeks buffer in pipeline';
+                    alertClass = 'alert-success';
+                } else {
+                    recommendation = 'Maintain 1 month buffer and monitor closely';
+                    alertClass = 'alert-warning';
+                }
+
+                const methodBadge = method === 'fallback'
+                    ? `<span class="badge badge-warning badge-sm ml-2">fallback model</span>`
+                    : `<span class="badge badge-success badge-sm ml-2">${method}</span>`;
+
+                document.getElementById('recommendations').innerHTML = `
+                    <div class="alert ${alertClass}">
+                        <span>
+                            Total forecast: <strong>${total.toLocaleString()}</strong> streams
+                            over <strong>${values.length}</strong> days
+                            &nbsp;|&nbsp; Avg: <strong>${avgDaily.toFixed(1)}</strong>/day
+                            &nbsp;|&nbsp; Min: <strong>${minDaily}</strong>
+                            &nbsp;|&nbsp; Max: <strong>${maxDaily}</strong>
+                            &nbsp;|&nbsp; Std Dev: <strong>±${stdDev}</strong>
+                        </span>
+                    </div>
+                    <div class="alert alert-info">
+                        <span><strong>Recommendation:</strong> ${recommendation}</span>
+                    </div>
+                    <div class="alert">
+                        <span>
+                            Peak demand: <strong>${maxDaily}</strong> streams on <strong>${peakDate}</strong>
+                            ${methodBadge}
+                            ${conf ? `<span class="badge badge-outline badge-sm ml-1">confidence: ${conf}</span>` : ''}
+                        </span>
+                    </div>
+                `;
+            }
+
+            // ── Alert helpers ────────────────────────────────────────────────
+            function showAlert(message, type) {
+                clearAlerts();
+                const typeClass = { error: 'alert-error', success: 'alert-success', info: 'alert-info' }[type] || 'alert-info';
+                const el = document.createElement('div');
+                el.className = `alert ${typeClass} mt-4 js-temp-alert`;
+                el.innerHTML = `
+                    <svg xmlns="http://www.w3.org/2000/svg" class="stroke-current shrink-0 h-6 w-6" fill="none" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                              d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/>
+                    </svg>
+                    <span>${message}</span>
+                `;
+                document.getElementById('summary-stats').prepend(el);
+            }
+
+            function clearAlerts() {
+                document.querySelectorAll('.js-temp-alert').forEach(el => el.remove());
+            }
+
+            // ── Debug helpers ────────────────────────────────────────────────
+            function showDebug(content) {
+                document.getElementById('debug-panel').classList.remove('hidden');
+                document.getElementById('debug-content').textContent = content;
+            }
+
+            function hideDebug() {
+                document.getElementById('debug-panel').classList.add('hidden');
+                document.getElementById('debug-content').textContent = '';
+            }
+        });
+    </script>
+</body>
+</html>

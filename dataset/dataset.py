@@ -3,6 +3,16 @@ import numpy as np
 from datetime import datetime, timedelta
 import random
 import uuid
+import os
+
+# Tentukan folder output = folder tempat script ini berada
+OUTPUT_DIR = os.path.dirname(os.path.abspath(__file__))
+
+def save_csv(df, filename):
+    path = os.path.join(OUTPUT_DIR, filename)
+    df.to_csv(path, index=False)
+    print(f"Saved: {path} ({len(df):,} records)")
+    return path
 
 np.random.seed(42)
 random.seed(42)
@@ -52,8 +62,7 @@ for i in range(1, 1001):
     })
 
 users_df = pd.DataFrame(users_data)
-users_df.to_csv('user_profiles.csv', index=False)
-print(f"Generated user_profiles.csv with {len(users_df)} records")
+save_csv(users_df, 'user_profiles.csv')
 
 # 2. GENERATE CONTENT CATALOG DATASET
 print("\nGenerating content_catalog.csv...")
@@ -118,8 +127,7 @@ for i in range(1, 501):
     })
 
 content_df = pd.DataFrame(content_data)
-content_df.to_csv('content_catalog.csv', index=False)
-print(f"Generated content_catalog.csv with {len(content_df)} records")
+save_csv(content_df, 'content_catalog.csv')
 
 # 3. GENERATE USER INTERACTIONS DATASET
 print("\nGenerating user_interactions.csv...")
@@ -162,8 +170,7 @@ for i in range(10000):
     })
 
 interactions_df = pd.DataFrame(interactions_data)
-interactions_df.to_csv('user_interactions.csv', index=False)
-print(f"Generated user_interactions.csv with {len(interactions_df)} records")
+save_csv(interactions_df, 'user_interactions.csv')
 
 # 4. GENERATE SUBSCRIPTION HISTORY DATASET
 print("\nGenerating subscription_history.csv...")
@@ -211,13 +218,11 @@ for _, user in subscribed_users.iterrows():
     })
 
 subscriptions_df = pd.DataFrame(subscriptions_data)
-subscriptions_df.to_csv('subscription_history.csv', index=False)
-print(f"Generated subscription_history.csv with {len(subscriptions_df)} records")
+save_csv(subscriptions_df, 'subscription_history.csv')
 
 # 5. SUMMARY
 print("\nDATASET SUMMARY")
 print("-" * 50)
-
 print(f"Users         : {len(users_df):,} records")
 print(f"Content       : {len(content_df):,} records")
 print(f"Interactions  : {len(interactions_df):,} records")
@@ -238,8 +243,4 @@ avg_subscription = subscriptions_df['amount'].mean()
 print(f"Total Revenue        : Rp {total_revenue:,.0f}")
 print(f"Avg Subscription Fee : Rp {avg_subscription:,.0f}")
 
-print("\nFiles generated:")
-print("  user_profiles.csv")
-print("  content_catalog.csv")
-print("  user_interactions.csv")
-print("  subscription_history.csv")
+print(f"\nSemua file dataset disimpan di: {OUTPUT_DIR}")

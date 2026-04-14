@@ -11,9 +11,7 @@ env:
   REPO_NAME: ${{ github.event.repository.name }}
 
 jobs:
-  # ─────────────────────────────────────────────────────────────────────────────
-  # Job 1 — Build & push lm-frontend Docker image to GHCR
-  # ─────────────────────────────────────────────────────────────────────────────
+
   build-frontend:
     name: Build Frontend Image
     runs-on: ubuntu-latest
@@ -56,9 +54,7 @@ jobs:
           echo "### ✅ Frontend Image Published" >> $GITHUB_STEP_SUMMARY
           echo "**Image:** \`${{ env.REGISTRY }}/${{ env.IMAGE_OWNER }}/${{ env.REPO_NAME }}:frontend-${{ steps.timestamp.outputs.TAG }}\`" >> $GITHUB_STEP_SUMMARY
 
-  # ─────────────────────────────────────────────────────────────────────────────
-  # Job 2 — Build & push llm-integrate-sns Docker image to GHCR
-  # ─────────────────────────────────────────────────────────────────────────────
+
   build-llm-integrate-sns:
     name: Build LLM Integrate SNS Image
     runs-on: ubuntu-latest
@@ -101,9 +97,6 @@ jobs:
           echo "### ✅ LLM Integrate SNS Image Published" >> $GITHUB_STEP_SUMMARY
           echo "**Image:** \`${{ env.REGISTRY }}/${{ env.IMAGE_OWNER }}/${{ env.REPO_NAME }}:llm-webhook-${{ steps.timestamp.outputs.TAG }}\`" >> $GITHUB_STEP_SUMMARY
 
-  # ─────────────────────────────────────────────────────────────────────────────
-  # Job 3 — Generate dataset, zip, upload to GitHub Release (tag: dataset)
-  # ─────────────────────────────────────────────────────────────────────────────
   build-example-dataset-csv:
     name: Build Example Dataset CSV
     runs-on: ubuntu-latest

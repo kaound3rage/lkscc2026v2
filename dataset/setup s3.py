@@ -4,7 +4,7 @@ import sys
 from botocore.exceptions import ClientError, NoCredentialsError
 
 
-BUCKET_NAME = "streamify-s3"          
+BUCKET_NAME = "streamify-bucket-lks2026"          
 AWS_REGION  = "us-east-1"           
 
 AWS_ACCESS_KEY_ID     = ""   

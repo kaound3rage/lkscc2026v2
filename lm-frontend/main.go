@@ -11,7 +11,6 @@ import (
 	"github.com/joho/godotenv"
 )
 
-// Config holds all environment-based configuration
 type Config struct {
 	Port          string
 	APIPrediction string
@@ -19,7 +18,7 @@ type Config struct {
 	APIGatewayKey string
 }
 
-// Logger wraps standard log with duration tracking
+
 type Logger struct {
 	logger *log.Logger
 }
@@ -44,7 +43,7 @@ func (l *Logger) Warn(format string, args ...interface{}) {
 
 var appLog = NewLogger()
 
-// loadConfig reads env vars (with .env fallback) into Config
+
 func loadConfig() Config {
 	if err := godotenv.Load(); err != nil {
 		appLog.Warn(".env file not found, reading from environment directly")
@@ -77,7 +76,7 @@ func getEnv(key, fallback string) string {
 	return fallback
 }
 
-// loggingMiddleware logs method, path, status, and duration for every request
+
 func loggingMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
@@ -91,7 +90,6 @@ func loggingMiddleware(next http.Handler) http.Handler {
 	})
 }
 
-// responseWriter wraps http.ResponseWriter to capture the status code
 type responseWriter struct {
 	http.ResponseWriter
 	statusCode int
@@ -102,7 +100,7 @@ func (rw *responseWriter) WriteHeader(code int) {
 	rw.ResponseWriter.WriteHeader(code)
 }
 
-// staticHandler serves an HTML file from the templates/ directory
+
 func staticHandler(filename string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
@@ -113,7 +111,7 @@ func staticHandler(filename string) http.HandlerFunc {
 	}
 }
 
-// proxyHandler forwards a POST request to targetURL, injecting the API key header
+
 func proxyHandler(targetURL, apiKey string) http.HandlerFunc {
 	client := &http.Client{
 		Timeout: 30 * time.Second,
@@ -125,7 +123,7 @@ func proxyHandler(targetURL, apiKey string) http.HandlerFunc {
 			return
 		}
 
-		// Build upstream request
+
 		proxyReq, err := http.NewRequestWithContext(r.Context(), http.MethodPost, targetURL, r.Body)
 		if err != nil {
 			appLog.Error("Failed to build proxy request to %s: %v", targetURL, err)
@@ -133,9 +131,8 @@ func proxyHandler(targetURL, apiKey string) http.HandlerFunc {
 			return
 		}
 
-		// Forward original headers
 		for key, values := range r.Header {
-			// Skip hop-by-hop headers
+
 			if isHopByHop(key) {
 				continue
 			}
@@ -144,13 +141,13 @@ func proxyHandler(targetURL, apiKey string) http.HandlerFunc {
 			}
 		}
 
-		// Inject API key — always overwrite to ensure correctness
+
 		proxyReq.Header.Set("x-api-key", apiKey)
 		proxyReq.Header.Set("Content-Type", "application/json")
 
 		appLog.Info("Proxying POST → %s", targetURL)
 
-		// Execute upstream request
+
 		resp, err := client.Do(proxyReq)
 		if err != nil {
 			appLog.Error("Upstream request failed: %v", err)
@@ -159,7 +156,6 @@ func proxyHandler(targetURL, apiKey string) http.HandlerFunc {
 		}
 		defer resp.Body.Close()
 
-		// Forward response headers
 		for key, values := range resp.Header {
 			if isHopByHop(key) {
 				continue
@@ -179,7 +175,7 @@ func proxyHandler(targetURL, apiKey string) http.HandlerFunc {
 	}
 }
 
-// isHopByHop returns true for headers that must not be forwarded in a proxy chain
+
 func isHopByHop(header string) bool {
 	hopByHop := []string{
 		"Connection", "Keep-Alive", "Proxy-Authenticate",

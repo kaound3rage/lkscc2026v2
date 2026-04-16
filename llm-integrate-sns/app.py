@@ -1,132 +1,126 @@
+"""
+llm-integrate-sns/app.py
+FastAPI webhook service untuk menerima SNS notification, membaca CloudWatch Logs,
+mengirim ke LLM (Ollama atau Groq), dan mempublish hasilnya kembali ke SNS.
+"""
+
 import os
 import json
-import logging
 import time
-from datetime import datetime, timezone
-from typing import Optional
+import logging
+import httpx
 
 import boto3
-import httpx
-from dotenv import load_dotenv
-from fastapi import FastAPI, Request, HTTPException
-from fastapi.responses import JSONResponse
+from datetime import datetime, timedelta, timezone
+from typing import Any
 
+from fastapi import FastAPI, Request, Response
+from dotenv import load_dotenv
+
+# ─────────────────────────────────────────────
+# Konfigurasi
+# ─────────────────────────────────────────────
 load_dotenv()
 
-# ── Logging ───────────────────────────────────────────────────────────────────
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s — %(message)s",
-    datefmt="%Y-%m-%d %H:%M:%S",
+    format="%(asctime)s [%(levelname)s] %(message)s",
 )
-logger = logging.getLogger("llm-integrate-sns")
+logger = logging.getLogger(__name__)
 
-# ── Config ────────────────────────────────────────────────────────────────────
-LLM_PROVIDER    = os.getenv("LLM_PROVIDER", "groq").lower()
-OLLAMA_ENDPOINT = os.getenv("OLLAMA_ENDPOINT", "http://localhost:11434/api/generate")
-OLLAMA_MODEL    = os.getenv("OLLAMA_MODEL", "qwen2.5:1.5b")
-GROQ_API_KEY    = os.getenv("GROQ_API_KEY", "")
-GROQ_MODEL      = os.getenv("GROQ_MODEL", "llama3-8b-8192")
-SNS_TOPIC_ARN   = os.getenv("SNS_TOPIC_ARN", "")
-AWS_REGION      = os.getenv("AWS_REGION", "us-east-1")
+app = FastAPI(title="LLM Integrate SNS Webhook", version="1.0.0")
 
-# LIST_SNS_TOPIC_ARN maps AlarmName -> CloudWatch log group
-_raw_list = os.getenv("LIST_SNS_TOPIC_ARN", "{}")
+# Environment variables
+LLM_PROVIDER       = os.getenv("LLM_PROVIDER", "ollama").lower()          # "ollama" | "groq"
+OLLAMA_ENDPOINT    = os.getenv("OLLAMA_ENDPOINT", "http://localhost:11434/api/generate")
+OLLAMA_MODEL       = os.getenv("OLLAMA_MODEL", "qwen2.5:1.5b")
+GROQ_API_KEY       = os.getenv("GROQ_API_KEY", "")
+GROQ_MODEL         = os.getenv("GROQ_MODEL", "llama3-8b-8192")
+SNS_TOPIC_ARN      = os.getenv("SNS_TOPIC_ARN", "")
+AWS_REGION         = os.getenv("AWS_REGION", "ap-southeast-1")
+
+# Mapping AlarmName → CloudWatch Log Group
+# Format JSON: '{"ForecastingError":"/aws/lambda/Forecasting","PredictionError":"/aws/lambda/Prediction"}'
+_raw_list_sns = os.getenv("LIST_SNS_TOPIC_ARN", "{}")
 try:
-    ALARM_LOG_GROUP_MAP: dict[str, str] = json.loads(_raw_list)
+    ALARM_TO_LOG_GROUP: dict[str, str] = json.loads(_raw_list_sns)
 except json.JSONDecodeError:
-    logger.warning("LIST_SNS_TOPIC_ARN is not valid JSON -- defaulting to {}")
-    ALARM_LOG_GROUP_MAP = {}
+    logger.warning("LIST_SNS_TOPIC_ARN bukan JSON valid, menggunakan {} sebagai default")
+    ALARM_TO_LOG_GROUP = {}
 
-# ── AWS clients ───────────────────────────────────────────────────────────────
-def _make_boto_session() -> boto3.Session:
-    return boto3.Session(
-        region_name=AWS_REGION,
-        aws_access_key_id=os.getenv("AWS_ACCESS_KEY_ID") or None,
-        aws_secret_access_key=os.getenv("AWS_SECRET_ACCESS_KEY") or None,
-        aws_session_token=os.getenv("AWS_SESSION_TOKEN") or None,
-    )
+# AWS clients
+_boto_kwargs: dict[str, Any] = {"region_name": AWS_REGION}
+if os.getenv("AWS_ACCESS_KEY_ID"):
+    _boto_kwargs["aws_access_key_id"]     = os.getenv("AWS_ACCESS_KEY_ID")
+    _boto_kwargs["aws_secret_access_key"] = os.getenv("AWS_SECRET_ACCESS_KEY")
 
-session    = _make_boto_session()
-cw_logs    = session.client("logs")
-sns_client = session.client("sns")
+logs_client = boto3.client("logs", **_boto_kwargs)
+sns_client  = boto3.client("sns",  **_boto_kwargs)
 
-# ── FastAPI app ───────────────────────────────────────────────────────────────
-app = FastAPI(
-    title="LLM Integrate SNS Webhook",
-    description="Receives SNS alarm notifications, analyses logs via LLM, publishes report back to SNS.",
-    version="1.0.0",
-)
+# ─────────────────────────────────────────────
+# Helper: Ambil log error dari CloudWatch
+# ─────────────────────────────────────────────
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Helpers -- CloudWatch
-# ─────────────────────────────────────────────────────────────────────────────
+def fetch_error_logs(log_group: str, limit: int = 5) -> list[str]:
+    """
+    Ambil 'limit' log yang mengandung kata 'ERROR' dalam 1 jam terakhir
+    dari CloudWatch Log Group yang diberikan.
+    """
+    end_time   = datetime.now(timezone.utc)
+    start_time = end_time - timedelta(hours=1)
 
-def get_log_group_for_alarm(alarm_name: str) -> Optional[str]:
-    for key, log_group in ALARM_LOG_GROUP_MAP.items():
-        if key.strip().lower() == alarm_name.strip().lower():
-            return log_group
-    return None
-
-
-def fetch_recent_error_logs(log_group: str, limit: int = 5, hours: int = 1) -> list[str]:
-    now_ms   = int(time.time() * 1000)
-    start_ms = now_ms - hours * 3600 * 1000
+    start_ms = int(start_time.timestamp() * 1000)
+    end_ms   = int(end_time.timestamp() * 1000)
 
     try:
-        resp = cw_logs.filter_log_events(
-            logGroupName=log_group,
-            startTime=start_ms,
-            endTime=now_ms,
-            filterPattern='"ERROR"',
-            limit=limit,
+        response = logs_client.filter_log_events(
+            logGroupName  = log_group,
+            startTime     = start_ms,
+            endTime       = end_ms,
+            filterPattern = "ERROR",
+            limit         = limit,
         )
-        events   = resp.get("events", [])
+        events = response.get("events", [])
         messages = [e["message"].strip() for e in events if e.get("message")]
-        logger.info("Fetched %d error log(s) from %s", len(messages), log_group)
+        logger.info(f"Ditemukan {len(messages)} log ERROR dari {log_group}")
         return messages
 
-    except cw_logs.exceptions.ResourceNotFoundException:
-        logger.warning("Log group not found: %s", log_group)
+    except logs_client.exceptions.ResourceNotFoundException:
+        logger.warning(f"Log group tidak ditemukan: {log_group}")
         return []
     except Exception as exc:
-        logger.error("CloudWatch fetch failed: %s", exc)
+        logger.error(f"Gagal fetch log dari {log_group}: {exc}")
         return []
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Helpers -- LLM
-# ─────────────────────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────
+# Helper: Kirim prompt ke LLM
+# ─────────────────────────────────────────────
 
-def build_prompt(alarm_name: str, logs: list[str]) -> str:
-    log_block = (
-        "\n".join(f"- {line}" for line in logs)
-        if logs
-        else "- (tidak ada log error yang ditemukan)"
-    )
+def build_prompt(logs: list[str]) -> str:
+    joined = "\n".join(f"- {line}" for line in logs) if logs else "(tidak ada log error yang ditemukan)"
     return (
-        f"Sebagai DevOps, berikan 1 ringkasan penyebab error (Summary) dan "
-        f"1 rekomendasi (Solusi) dari semua log berikut.\n\n"
-        f"Alarm: {alarm_name}\n\n"
-        f"Log Error:\n{log_block}"
+        "Sebagai DevOps, berikan 1 ringkasan penyebab error (Summary) "
+        "dan 1 rekomendasi (Solusi) dari semua log berikut.\n\n"
+        f"Log Error:\n{joined}"
     )
 
 
-async def call_ollama(prompt: str) -> str:
+def call_ollama(prompt: str) -> str:
     payload = {
         "model":  OLLAMA_MODEL,
         "prompt": prompt,
         "stream": False,
     }
-    # Timeout lebih lama karena Ollama perlu load model saat cold-start
-    async with httpx.AsyncClient(timeout=120) as client:
-        resp = await client.post(OLLAMA_ENDPOINT, json=payload)
+    with httpx.Client(timeout=120) as client:
+        resp = client.post(OLLAMA_ENDPOINT, json=payload)
         resp.raise_for_status()
         data = resp.json()
         return data.get("response", "").strip()
 
 
-async def call_groq(prompt: str) -> str:
+def call_groq(prompt: str) -> str:
+    url = "https://api.groq.com/openai/v1/chat/completions"
     headers = {
         "Authorization": f"Bearer {GROQ_API_KEY}",
         "Content-Type":  "application/json",
@@ -134,197 +128,151 @@ async def call_groq(prompt: str) -> str:
     payload = {
         "model": GROQ_MODEL,
         "messages": [
-            {
-                "role":    "system",
-                "content": "Kamu adalah asisten DevOps yang membantu menganalisis log error sistem.",
-            },
-            {
-                "role":    "user",
-                "content": prompt,
-            },
+            {"role": "system", "content": "Kamu adalah seorang DevOps engineer yang ahli."},
+            {"role": "user",   "content": prompt},
         ],
-        "temperature": 0.3,
-        "max_tokens":  512,
     }
-    async with httpx.AsyncClient(timeout=60) as client:
-        resp = await client.post(
-            "https://api.groq.com/openai/v1/chat/completions",
-            headers=headers,
-            json=payload,
-        )
+    with httpx.Client(timeout=120) as client:
+        resp = client.post(url, headers=headers, json=payload)
         resp.raise_for_status()
         data = resp.json()
         return data["choices"][0]["message"]["content"].strip()
 
 
-async def call_llm(prompt: str) -> str:
-    logger.info("Calling LLM provider: %s", LLM_PROVIDER)
-    if LLM_PROVIDER == "ollama":
-        return await call_ollama(prompt)
-    elif LLM_PROVIDER == "groq":
-        return await call_groq(prompt)
+def call_llm(prompt: str) -> str:
+    if LLM_PROVIDER == "groq":
+        logger.info("Menggunakan Groq sebagai LLM provider")
+        return call_groq(prompt)
     else:
-        raise ValueError(f"Unknown LLM_PROVIDER: '{LLM_PROVIDER}'. Use 'ollama' or 'groq'.")
+        logger.info("Menggunakan Ollama sebagai LLM provider")
+        return call_ollama(prompt)
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Helpers -- SNS
-# ─────────────────────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────
+# Helper: Publish hasil ke SNS
+# ─────────────────────────────────────────────
 
-def publish_to_sns(alarm_name: str, llm_response: str, logs: list[str]) -> str:
+def publish_to_sns(alarm_name: str, llm_response: str) -> None:
     subject = f"Resume Incident Report: {alarm_name}"
-
-    timestamp   = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
-    log_section = (
-        "\n".join(f"  {i+1}. {line}" for i, line in enumerate(logs))
-        if logs
-        else "  (tidak ada log)"
-    )
-
     message = (
         f"=== INCIDENT REPORT ===\n"
         f"Alarm    : {alarm_name}\n"
-        f"Timestamp: {timestamp}\n"
+        f"Waktu    : {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')}\n"
         f"Provider : {LLM_PROVIDER.upper()}\n\n"
-        f"--- LOG ERROR (5 terbaru) ---\n{log_section}\n\n"
-        f"--- ANALISIS LLM ---\n{llm_response}\n"
+        f"--- Analisis LLM ---\n"
+        f"{llm_response}\n"
         f"=======================\n"
     )
+    try:
+        response = sns_client.publish(
+            TopicArn = SNS_TOPIC_ARN,
+            Subject  = subject[:100],   # SNS subject max 100 karakter
+            Message  = message,
+        )
+        logger.info(f"Berhasil publish ke SNS. MessageId: {response['MessageId']}")
+    except Exception as exc:
+        logger.error(f"Gagal publish ke SNS: {exc}")
+        raise
 
-    resp       = sns_client.publish(
-        TopicArn=SNS_TOPIC_ARN,
-        Subject=subject[:100],
-        Message=message,
-    )
-    message_id = resp["MessageId"]
-    logger.info("SNS publish success -- MessageId: %s", message_id)
-    return message_id
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Webhook endpoint
-# ─────────────────────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────
+# ENDPOINT: POST /webhook
+# ─────────────────────────────────────────────
 
 @app.post("/webhook")
-async def webhook(request: Request):
-    body_bytes = await request.body()
+async def webhook(request: Request) -> Response:
+    """
+    Menerima SNS notification:
+    - SubscriptionConfirmation : auto-konfirmasi via GET ke SubscribeURL
+    - Notification             : proses alarm, ambil log, panggil LLM, publish SNS
+    """
     try:
-        body = json.loads(body_bytes)
-    except json.JSONDecodeError:
-        logger.error("Invalid JSON body received")
-        raise HTTPException(status_code=400, detail="Request body must be valid JSON")
+        body_bytes = await request.body()
+        body_text  = body_bytes.decode("utf-8")
+        payload    = json.loads(body_text)
+    except Exception as exc:
+        logger.error(f"Gagal parse request body: {exc}")
+        return Response(content="Bad Request", status_code=400)
 
-    message_type = body.get("Type", "")
-    logger.info("Received SNS message type: %s", message_type)
+    message_type = payload.get("Type", "")
+    logger.info(f"Menerima SNS message tipe: {message_type}")
 
-    # ── 1. SubscriptionConfirmation ───────────────────────────────────────────
+    # ── 1. SubscriptionConfirmation ──────────────────────
     if message_type == "SubscriptionConfirmation":
-        subscribe_url = body.get("SubscribeURL")
-        if not subscribe_url:
-            raise HTTPException(status_code=400, detail="SubscribeURL missing in SubscriptionConfirmation")
+        subscribe_url = payload.get("SubscribeURL")
+        if subscribe_url:
+            try:
+                with httpx.Client(timeout=30) as client:
+                    resp = client.get(subscribe_url)
+                    resp.raise_for_status()
+                logger.info("SubscriptionConfirmation berhasil dikonfirmasi")
+                return Response(content="Confirmed", status_code=200)
+            except Exception as exc:
+                logger.error(f"Gagal konfirmasi subscription: {exc}")
+                return Response(content="Confirmation Failed", status_code=500)
+        return Response(content="No SubscribeURL", status_code=400)
 
-        logger.info("Confirming SNS subscription via: %s", subscribe_url)
-        async with httpx.AsyncClient(timeout=15) as client:
-            confirm_resp = await client.get(subscribe_url)
-            confirm_resp.raise_for_status()
-
-        logger.info("SNS subscription confirmed successfully")
-        return JSONResponse({"status": "confirmed"})
-
-    # ── 2. Notification ───────────────────────────────────────────────────────
+    # ── 2. Notification ──────────────────────────────────
     elif message_type == "Notification":
-        raw_message = body.get("Message", "")
-
+        # Parse message JSON dari SNS (CloudWatch alarm payload)
         try:
-            message_data = json.loads(raw_message)
-        except (json.JSONDecodeError, TypeError):
-            message_data = {}
+            message_body = json.loads(payload.get("Message", "{}"))
+        except json.JSONDecodeError:
+            message_body = {"AlarmName": payload.get("Subject", "UnknownAlarm")}
 
-        alarm_name = (
-            message_data.get("AlarmName")
-            or body.get("Subject", "UnknownAlarm")
-        )
-        logger.info("Processing alarm notification: %s", alarm_name)
+        alarm_name  = message_body.get("AlarmName", "UnknownAlarm")
+        alarm_state = message_body.get("NewStateValue", "UNKNOWN")
+        logger.info(f"Alarm: {alarm_name}, State: {alarm_state}")
 
-        # Step 1 -- Resolve log group
-        log_group = get_log_group_for_alarm(alarm_name)
+        # Hanya proses saat state ALARM (bukan OK)
+        if alarm_state == "OK":
+            logger.info("State OK, tidak perlu diproses")
+            return Response(content="OK state ignored", status_code=200)
+
+        # Cari log group berdasarkan alarm name
+        log_group = ALARM_TO_LOG_GROUP.get(alarm_name)
         if not log_group:
-            logger.warning(
-                "No log group mapping found for alarm '%s'. Available mappings: %s",
-                alarm_name,
-                list(ALARM_LOG_GROUP_MAP.keys()),
-            )
+            logger.warning(f"AlarmName '{alarm_name}' tidak ada di LIST_SNS_TOPIC_ARN mapping")
+            log_group = f"/aws/lambda/{alarm_name.replace('Error', '')}"
+            logger.info(f"Menggunakan fallback log group: {log_group}")
 
-        # Step 2 -- Fetch recent error logs
-        logs = fetch_recent_error_logs(log_group) if log_group else []
+        # Ambil 5 log error terbaru
+        error_logs = fetch_error_logs(log_group, limit=5)
 
-        # Step 3 -- Build prompt and call LLM
-        prompt = build_prompt(alarm_name, logs)
-        logger.info("Sending %d log(s) to LLM (%s)", len(logs), LLM_PROVIDER)
+        # Buat prompt dan panggil LLM
+        prompt       = build_prompt(error_logs)
+        llm_response = call_llm(prompt)
+        logger.info(f"Respons LLM (preview): {llm_response[:200]}...")
 
-        try:
-            llm_result = await call_llm(prompt)
-        except httpx.HTTPStatusError as exc:
-            logger.error("LLM HTTP error: %s -- %s", exc.response.status_code, exc.response.text)
-            raise HTTPException(status_code=502, detail=f"LLM provider error: {exc.response.status_code}")
-        except Exception as exc:
-            logger.error("LLM call failed: %s", exc)
-            raise HTTPException(status_code=502, detail=f"LLM call failed: {str(exc)}")
+        # Publish hasil ke SNS
+        publish_to_sns(alarm_name, llm_response)
 
-        logger.info("LLM response received (%d chars)", len(llm_result))
+        return Response(content="Processed", status_code=200)
 
-        # Step 4 -- Publish to SNS
-        if not SNS_TOPIC_ARN:
-            logger.warning("SNS_TOPIC_ARN is not set -- skipping publish")
-            return JSONResponse({
-                "status":     "processed",
-                "alarm":      alarm_name,
-                "log_count":  len(logs),
-                "llm_result": llm_result,
-                "sns":        "skipped (SNS_TOPIC_ARN not set)",
-            })
-
-        try:
-            message_id = publish_to_sns(alarm_name, llm_result, logs)
-        except Exception as exc:
-            logger.error("SNS publish failed: %s", exc)
-            raise HTTPException(status_code=502, detail=f"SNS publish failed: {str(exc)}")
-
-        return JSONResponse({
-            "status":         "published",
-            "alarm":          alarm_name,
-            "log_group":      log_group or "(not mapped)",
-            "log_count":      len(logs),
-            "llm_provider":   LLM_PROVIDER,
-            "sns_message_id": message_id,
-        })
-
-    # ── Unknown type ──────────────────────────────────────────────────────────
+    # ── 3. Tipe tidak dikenal ────────────────────────────
     else:
-        logger.warning("Unhandled SNS message type: %s", message_type)
-        return JSONResponse({"status": "ignored", "type": message_type})
+        logger.warning(f"Tipe SNS message tidak dikenal: {message_type}")
+        return Response(content="Unknown message type", status_code=400)
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────
 # Health check
-# ─────────────────────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────
 
 @app.get("/health")
-async def health():
+def health_check():
     return {
-        "status":       "ok",
+        "status":       "healthy",
         "llm_provider": LLM_PROVIDER,
-        "sns_topic":    SNS_TOPIC_ARN or "(not set)",
-        "alarm_map":    list(ALARM_LOG_GROUP_MAP.keys()),
+        "timestamp":    datetime.now(timezone.utc).isoformat(),
     }
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Entrypoint
-# ─────────────────────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────
+# Entry point (untuk development)
+# ─────────────────────────────────────────────
 
 if __name__ == "__main__":
     import uvicorn
     port = int(os.getenv("PORT", "8080"))
-    logger.info("Starting llm-integrate-sns on port %d", port)
     uvicorn.run("app:app", host="0.0.0.0", port=port, reload=False)

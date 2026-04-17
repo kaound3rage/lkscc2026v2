@@ -1,45 +1,54 @@
 # ============================================================
-# CLOUDWATCH ALARMS (untuk monitoring Lambda error)
+# CLOUDWATCH ALARMS (for monitoring Lambda errors)
 # ============================================================
+Resources:
+  # SNS Topic – used to send notifications when alarms trigger
+  NotificationTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      DisplayName: "Lambda Error Alarm Topic"
+      TopicName: "lambda-error-alarms"
 
-PredictionErrorAlarm:
-  Type: AWS::CloudWatch::Alarm
-  Properties:
-    AlarmName: PredictionError
-    AlarmDescription: "Alarm aktif jika Lambda Prediction memiliki error > 0 dalam 1 menit"
-    Namespace: AWS/Lambda
-    MetricName: Errors
-    Dimensions:
-      - Name: FunctionName
-        Value: Prediction
-    Statistic: Sum
-    Period: 60
-    EvaluationPeriods: 1
-    Threshold: 0
-    ComparisonOperator: GreaterThanThreshold
-    TreatMissingData: notBreaching
-    AlarmActions:
-      - !Ref NotificationMail   # butuh SNS topic dengan nama ini
-    OKActions:
-      - !Ref NotificationMail
+  # Alarm for Prediction Lambda
+  PredictionErrorAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: PredictionError
+      AlarmDescription: "Alarm aktif jika Lambda Prediction memiliki error > 0 dalam 1 menit"
+      Namespace: AWS/Lambda
+      MetricName: Errors
+      Dimensions:
+        - Name: FunctionName
+          Value: Prediction
+      Statistic: Sum
+      Period: 60
+      EvaluationPeriods: 1
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref NotificationTopic
+      OKActions:
+        - !Ref NotificationTopic
 
-ForecastingErrorAlarm:
-  Type: AWS::CloudWatch::Alarm
-  Properties:
-    AlarmName: ForecastingError
-    AlarmDescription: "Alarm aktif jika Lambda Forecasting memiliki error > 0 dalam 1 menit"
-    Namespace: AWS/Lambda
-    MetricName: Errors
-    Dimensions:
-      - Name: FunctionName
-        Value: Forecasting
-    Statistic: Sum
-    Period: 60
-    EvaluationPeriods: 1
-    Threshold: 0
-    ComparisonOperator: GreaterThanThreshold
-    TreatMissingData: notBreaching
-    AlarmActions:
-      - !Ref NotificationEmail
-    OKActions:
-      - !Ref NotificationEmail
+  # Alarm for Forecasting Lambda
+  ForecastingErrorAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: ForecastingError
+      AlarmDescription: "Alarm aktif jika Lambda Forecasting memiliki error > 0 dalam 1 menit"
+      Namespace: AWS/Lambda
+      MetricName: Errors
+      Dimensions:
+        - Name: FunctionName
+          Value: Forecasting
+      Statistic: Sum
+      Period: 60
+      EvaluationPeriods: 1
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref NotificationTopic
+      OKActions:
+        - !Ref NotificationTopic

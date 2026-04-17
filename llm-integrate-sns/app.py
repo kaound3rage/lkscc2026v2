@@ -15,12 +15,10 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from fastapi import FastAPI, Request, Response
-from dotenv import load_dotenv
 
 # ─────────────────────────────────────────────
 # Konfigurasi
 # ─────────────────────────────────────────────
-load_dotenv()
 
 logging.basicConfig(
     level=logging.INFO,
@@ -30,32 +28,34 @@ logger = logging.getLogger(__name__)
 
 app = FastAPI(title="LLM Integrate SNS Webhook", version="1.0.0")
 
-# Environment variables
-LLM_PROVIDER       = os.getenv("LLM_PROVIDER", "ollama").lower()          # "ollama" | "groq"
-OLLAMA_ENDPOINT    = os.getenv("OLLAMA_ENDPOINT", "http://localhost:11434/api/generate")
-OLLAMA_MODEL       = os.getenv("OLLAMA_MODEL", "qwen2.5:1.5b")
-GROQ_API_KEY       = os.getenv("GROQ_API_KEY", "")
-GROQ_MODEL         = os.getenv("GROQ_MODEL", "llama3-8b-8192")
-SNS_TOPIC_ARN      = os.getenv("SNS_TOPIC_ARN", "")
-AWS_REGION         = os.getenv("AWS_REGION", "ap-southeast-1")
+# ── Hardcoded configuration ──────────────────
+LLM_PROVIDER    = "groq"
+OLLAMA_ENDPOINT = "http://98.93.142.169:11434/api/generate"
+OLLAMA_MODEL    = "qwen2.5:1.5b"
+GROQ_API_KEY    = "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"  # ← GANTI DENGAN API KEY GROQ ANDA
+GROQ_MODEL      = "llama3-8b-8192"
+SNS_TOPIC_ARN   = "arn:aws:sns:us-east-1:647127242402:lambda-error-alarms"
+AWS_REGION      = "us-east-1"
 
 # Mapping AlarmName → CloudWatch Log Group
-# Format JSON: '{"ForecastingError":"/aws/lambda/Forecasting","PredictionError":"/aws/lambda/Prediction"}'
-_raw_list_sns = os.getenv("LIST_SNS_TOPIC_ARN", "{}")
-try:
-    ALARM_TO_LOG_GROUP: dict[str, str] = json.loads(_raw_list_sns)
-except json.JSONDecodeError:
-    logger.warning("LIST_SNS_TOPIC_ARN bukan JSON valid, menggunakan {} sebagai default")
-    ALARM_TO_LOG_GROUP = {}
+ALARM_TO_LOG_GROUP: dict[str, str] = {
+    "ForecastingError": "/aws/lambda/forecasting",
+    "PredictionError":  "/aws/lambda/prediction",
+}
 
 # AWS clients
-_boto_kwargs: dict[str, Any] = {"region_name": AWS_REGION}
-if os.getenv("AWS_ACCESS_KEY_ID"):
-    _boto_kwargs["aws_access_key_id"]     = os.getenv("AWS_ACCESS_KEY_ID")
-    _boto_kwargs["aws_secret_access_key"] = os.getenv("AWS_SECRET_ACCESS_KEY")
-
-logs_client = boto3.client("logs", **_boto_kwargs)
-sns_client  = boto3.client("sns",  **_boto_kwargs)
+logs_client = boto3.client(
+    "logs",
+    region_name          = AWS_REGION,
+    aws_access_key_id    = "ASIAZNK6KC2RH2I4BP64",
+    aws_secret_access_key= "wW/SYgWwhwmZgoOYsrfgcOo25SSrKvE3pvoyCZks",
+)
+sns_client = boto3.client(
+    "sns",
+    region_name          = AWS_REGION,
+    aws_access_key_id    = "ASIAZNK6KC2RH2I4BP64",
+    aws_secret_access_key= "wW/SYgWwhwmZgoOYsrfgcOo25SSrKvE3pvoyCZks",
+)
 
 # ─────────────────────────────────────────────
 # Helper: Ambil log error dari CloudWatch
@@ -80,7 +80,7 @@ def fetch_error_logs(log_group: str, limit: int = 5) -> list[str]:
             filterPattern = "ERROR",
             limit         = limit,
         )
-        events = response.get("events", [])
+        events   = response.get("events", [])
         messages = [e["message"].strip() for e in events if e.get("message")]
         logger.info(f"Ditemukan {len(messages)} log ERROR dari {log_group}")
         return messages
@@ -166,7 +166,7 @@ def publish_to_sns(alarm_name: str, llm_response: str) -> None:
     try:
         response = sns_client.publish(
             TopicArn = SNS_TOPIC_ARN,
-            Subject  = subject[:100],   # SNS subject max 100 karakter
+            Subject  = subject[:100],
             Message  = message,
         )
         logger.info(f"Berhasil publish ke SNS. MessageId: {response['MessageId']}")
@@ -214,7 +214,6 @@ async def webhook(request: Request) -> Response:
 
     # ── 2. Notification ──────────────────────────────────
     elif message_type == "Notification":
-        # Parse message JSON dari SNS (CloudWatch alarm payload)
         try:
             message_body = json.loads(payload.get("Message", "{}"))
         except json.JSONDecodeError:
@@ -232,8 +231,8 @@ async def webhook(request: Request) -> Response:
         # Cari log group berdasarkan alarm name
         log_group = ALARM_TO_LOG_GROUP.get(alarm_name)
         if not log_group:
-            logger.warning(f"AlarmName '{alarm_name}' tidak ada di LIST_SNS_TOPIC_ARN mapping")
-            log_group = f"/aws/lambda/{alarm_name.replace('Error', '')}"
+            logger.warning(f"AlarmName '{alarm_name}' tidak ada di mapping")
+            log_group = f"/aws/lambda/{alarm_name.replace('Error', '').lower()}"
             logger.info(f"Menggunakan fallback log group: {log_group}")
 
         # Ambil 5 log error terbaru
@@ -269,10 +268,9 @@ def health_check():
 
 
 # ─────────────────────────────────────────────
-# Entry point (untuk development)
+# Entry point
 # ─────────────────────────────────────────────
 
 if __name__ == "__main__":
     import uvicorn
-    port = int(os.getenv("PORT", "8080"))
-    uvicorn.run("app:app", host="0.0.0.0", port=port, reload=False)
+    uvicorn.run("app:app", host="0.0.0.0", port=8080, reload=False)

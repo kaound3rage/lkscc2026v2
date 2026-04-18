@@ -12,8 +12,8 @@ app = FastAPI()
 # ══════════════════════════════════════════════════════════════════════════════
 
 LLM_PROVIDER = "groq"
-GROQ_API_KEY = os.getenv("GROQ_API_KEY", "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")
-GROQ_MODEL   = "llama3-8b-8192"
+GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
+GROQ_MODEL   = os.getenv("GROQ_MODEL", "llama-3.1-8b-instant")
 
 OLLAMA_ENDPOINT = "http://localhost:11434/api/generate"
 OLLAMA_MODEL    = "qwen2.5:1.5b"
@@ -22,8 +22,8 @@ SNS_TOPIC_ARN = "arn:aws:sns:us-east-1:647127242402:NotificationMail"
 AWS_REGION    = "us-east-1"
 
 LIST_SNS_TOPIC_ARN = {
-    "ForecastingError": "/aws/lambda/forecasting",  # huruf kecil
-    "PredictionError":  "/aws/lambda/prediction",   # huruf kecil
+    "ForecastingError": "/aws/lambda/forecasting",
+    "PredictionError":  "/aws/lambda/prediction",
 }
 
 # AWS clients — credentials dari instance profile EC2 (LabRole)
@@ -128,7 +128,7 @@ async def webhook(request: Request):
         except json.JSONDecodeError:
             notification = {}
 
-        # Ambil AlarmName dari dalam payload CloudWatch
+        # Ambil AlarmName dari payload CloudWatch
         alarm_name = notification.get("AlarmName")
         if not alarm_name:
             print("[Webhook] Bukan CloudWatch alarm, abaikan.")

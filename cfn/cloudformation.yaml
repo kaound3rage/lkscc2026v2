@@ -1,25 +1,83 @@
-# ============================================================
-# CLOUDWATCH ALARMS (for monitoring Lambda errors)
-# ============================================================
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  Streamify — Monitoring & Automated Incident Response Stack
+  Membuat: SNS Topic, CloudWatch Alarms, EC2 Security Group.
+  IAM menggunakan LabRole yang sudah ada.
+
+# ══════════════════════════════════════════════════════════════════════════════
+# P A R A M E T E R S
+# ══════════════════════════════════════════════════════════════════════════════
+Parameters:
+
+  JuriEmail:
+    Type: String
+    Description: "Alamat email juri — akan menerima notifikasi SNS"
+    AllowedPattern: "^[^@]+@[^@]+\\.[^@]+$"
+
+  WebhookEC2IP:
+    Type: String
+    Description: "IP publik EC2 tempat llm-integrate-sns berjalan (misal: 54.123.45.67)"
+    Default: "0.0.0.0"
+
+  LambdaPredictionFunctionName:
+    Type: String
+    Default: "Prediction"
+    Description: "Nama Lambda function Stream Prediction"
+
+  LambdaForecastingFunctionName:
+    Type: String
+    Default: "Forecasting"
+    Description: "Nama Lambda function Stream Forecasting"
+
+  ExistingVPCId:
+    Type: AWS::EC2::VPC::Id
+    Description: "VPC ID tempat EC2 berjalan"
+
+  # ✅ BARU: LabRole dijadikan parameter agar mudah diganti tanpa edit template
+  LabRoleName:
+    Type: String
+    Default: "LabRole"
+    Description: "Nama IAM Role (LabRole) yang sudah ada di akun — dipakai oleh EC2 Instance Profile"
+
+# ══════════════════════════════════════════════════════════════════════════════
+# R E S O U R C E S
+# ══════════════════════════════════════════════════════════════════════════════
 Resources:
-  # SNS Topic – used to send notifications when alarms trigger
-  NotificationTopic:
+
+  # ── 1. SNS Topic ─────────────────────────────────────────────────────────────
+  NotificationMailTopic:
     Type: AWS::SNS::Topic
     Properties:
-      DisplayName: "Lambda Error Alarm Topic"
-      TopicName: "lambda-error-alarms"
+      TopicName: NotificationMail
+      DisplayName: "Streamify Incident Notifications"
 
-  # Alarm for Prediction Lambda
+  # Email subscription — juri harus klik konfirmasi di inbox
+  JuriEmailSubscription:
+    Type: AWS::SNS::Subscription
+    Properties:
+      TopicArn: !Ref NotificationMailTopic
+      Protocol: email
+      Endpoint: !Ref JuriEmail
+
+  # HTTPS subscription ke webhook (dikonfirmasi otomatis oleh llm-integrate-sns)
+  WebhookSubscription:
+    Type: AWS::SNS::Subscription
+    Properties:
+      TopicArn: !Ref NotificationMailTopic
+      Protocol: http
+      Endpoint: !Sub "http://${WebhookEC2IP}:8080/webhook"
+
+  # ── 2. CloudWatch Alarm — Lambda Prediction ───────────────────────────────────
   PredictionErrorAlarm:
     Type: AWS::CloudWatch::Alarm
     Properties:
       AlarmName: PredictionError
-      AlarmDescription: "Alarm aktif jika Lambda Prediction memiliki error > 0 dalam 1 menit"
+      AlarmDescription: "Terpicu saat Lambda Prediction mengalami error"
       Namespace: AWS/Lambda
       MetricName: Errors
       Dimensions:
         - Name: FunctionName
-          Value: Prediction
+          Value: !Ref LambdaPredictionFunctionName
       Statistic: Sum
       Period: 60
       EvaluationPeriods: 1
@@ -27,21 +85,21 @@ Resources:
       ComparisonOperator: GreaterThanThreshold
       TreatMissingData: notBreaching
       AlarmActions:
-        - !Ref NotificationTopic
+        - !Ref NotificationMailTopic
       OKActions:
-        - !Ref NotificationTopic
+        - !Ref NotificationMailTopic
 
-  # Alarm for Forecasting Lambda
+  # ── 3. CloudWatch Alarm — Lambda Forecasting ─────────────────────────────────
   ForecastingErrorAlarm:
     Type: AWS::CloudWatch::Alarm
     Properties:
       AlarmName: ForecastingError
-      AlarmDescription: "Alarm aktif jika Lambda Forecasting memiliki error > 0 dalam 1 menit"
+      AlarmDescription: "Terpicu saat Lambda Forecasting mengalami error"
       Namespace: AWS/Lambda
       MetricName: Errors
       Dimensions:
         - Name: FunctionName
-          Value: Forecasting
+          Value: !Ref LambdaForecastingFunctionName
       Statistic: Sum
       Period: 60
       EvaluationPeriods: 1
@@ -49,6 +107,67 @@ Resources:
       ComparisonOperator: GreaterThanThreshold
       TreatMissingData: notBreaching
       AlarmActions:
-        - !Ref NotificationTopic
+        - !Ref NotificationMailTopic
       OKActions:
-        - !Ref NotificationTopic
+        - !Ref NotificationMailTopic
+
+  # ── 4. EC2 Instance Profile pakai LabRole ────────────────────────────────────
+  EC2InstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      InstanceProfileName: streamify-ec2-instance-profile
+      Roles:
+        - !Ref LabRoleName   # ✅ Referensi ke parameter, bukan hardcode "LabRole"
+
+  # ── 5. Security Group untuk EC2 ──────────────────────────────────────────────
+  EC2SecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: streamify-ec2-sg
+      GroupDescription: "Port 3000 (frontend) dan 8080 (webhook)"
+      VpcId: !Ref ExistingVPCId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 3000
+          ToPort: 3000
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: 8080
+          ToPort: 8080
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: 0.0.0.0/0
+      SecurityGroupEgress:
+        - IpProtocol: "-1"
+          CidrIp: 0.0.0.0/0
+      Tags:
+        - Key: Name
+          Value: streamify-ec2-sg
+
+# ══════════════════════════════════════════════════════════════════════════════
+# O U T P U T S
+# ══════════════════════════════════════════════════════════════════════════════
+Outputs:
+
+  SNSTopicArn:
+    Description: "ARN SNS Topic NotificationMail"
+    Value: !Ref NotificationMailTopic
+    Export:
+      Name: StreamifySNSTopicArn
+
+  # ✅ BARU: Tampilkan nama LabRole yang dipakai agar mudah diverifikasi
+  LabRoleUsed:
+    Description: "Nama IAM LabRole yang digunakan oleh EC2 Instance Profile"
+    Value: !Ref LabRoleName
+
+  EC2InstanceProfileName:
+    Description: "Instance Profile yang menggunakan LabRole — pilih ini saat launch EC2"
+    Value: !Ref EC2InstanceProfile
+
+  EC2SecurityGroupId:
+    Description: "Security Group ID — pilih ini saat launch EC2"
+    Value: !Ref EC2SecurityGroup
+    Export:
+      Name: StreamifyEC2SecurityGroupId

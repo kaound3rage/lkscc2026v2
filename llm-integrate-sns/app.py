@@ -7,9 +7,7 @@ from datetime import datetime, timezone, timedelta
 
 app = FastAPI()
 
-# ══════════════════════════════════════════════════════════════════════════════
-# KONFIGURASI
-# ══════════════════════════════════════════════════════════════════════════════
+
 
 LLM_PROVIDER = "groq"
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
@@ -26,14 +24,12 @@ LIST_SNS_TOPIC_ARN = {
     "PredictionError":  "/aws/lambda/prediction",
 }
 
-# AWS clients — credentials dari instance profile EC2 (LabRole)
+
 sns_client  = boto3.client("sns",  region_name=AWS_REGION)
 logs_client = boto3.client("logs", region_name=AWS_REGION)
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# Helpers
-# ══════════════════════════════════════════════════════════════════════════════
+
 
 def get_log_group(alarm_name: str) -> str | None:
     return LIST_SNS_TOPIC_ARN.get(alarm_name)
@@ -89,9 +85,7 @@ def publish_to_sns(subject: str, message: str) -> None:
     )
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# Webhook endpoint
-# ══════════════════════════════════════════════════════════════════════════════
+
 
 @app.post("/webhook")
 async def webhook(request: Request):
@@ -103,13 +97,12 @@ async def webhook(request: Request):
     except json.JSONDecodeError:
         return {"status": "error", "detail": "Invalid JSON"}
 
-    # ── LOOP PREVENTION — abaikan notifikasi dari laporan kita sendiri ─────────
     subject_raw = body.get("Subject", "")
     if "Resume Incident Report" in subject_raw:
         print(f"[Webhook] Abaikan — loop detected: {subject_raw[:80]}")
         return {"status": "ignored", "reason": "loop_prevention"}
 
-    # ── 1. SubscriptionConfirmation ───────────────────────────────────────────
+
     if message_type == "SubscriptionConfirmation" or body.get("Type") == "SubscriptionConfirmation":
         subscribe_url = body.get("SubscribeURL")
         if subscribe_url:
@@ -121,14 +114,14 @@ async def webhook(request: Request):
                 print(f"[SNS] Gagal konfirmasi: {exc}")
         return {"status": "confirmed"}
 
-    # ── 2. Notification ───────────────────────────────────────────────────────
+
     if message_type == "Notification" or body.get("Type") == "Notification":
         try:
             notification = json.loads(body.get("Message", "{}"))
         except json.JSONDecodeError:
             notification = {}
 
-        # Ambil AlarmName dari payload CloudWatch
+
         alarm_name = notification.get("AlarmName")
         if not alarm_name:
             print("[Webhook] Bukan CloudWatch alarm, abaikan.")
@@ -175,7 +168,7 @@ async def webhook(request: Request):
     return {"status": "ignored", "type": message_type}
 
 
-# ── Health check ──────────────────────────────────────────────────────────────
+
 @app.get("/health")
 def health():
     return {"status": "ok"}

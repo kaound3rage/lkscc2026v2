@@ -9,8 +9,8 @@ A machine learning system for content recommendation and stream forecasting on a
   | | |          with love & coffee ☕
   (＿)＿)          for lkscc fighter!
          /\_/\       lks is good
-        / 0 0 \      but
-       =   ^   =     in my eyes you are better
+        / 0 0 \         but
+       =   ^   =   in my eyes you are better
         \_()_/
           U
 ```

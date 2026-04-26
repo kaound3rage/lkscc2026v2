@@ -2,22 +2,18 @@
 
 A machine learning system for content recommendation and stream forecasting on a streaming platform, deployed on AWS using Lambda, DynamoDB, and S3.
 
-
-
-   ∧＿＿∧　 ♡      dont give up,
+```
+    ∧＿∧　 ♡      dont give up,
   (｡･ω･｡)つ━☆    every bug you fix
   (　　　 )         makes you stronger!
   | | |          with love & coffee ☕
   (＿)＿)          for lkscc fighter!
-
          /\_/\       lks is good
         / 0 0 \      but
        =   ^   =     in my eyes you are better
         \_()_/
           U
-
-
-
+```
 
 
 ## Architecture
